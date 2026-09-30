@@ -2,3 +2,5 @@
 *.jpg
 *.engine
 *.bmp
+deepstream_pipeline/predictions/*
+deepstream_pipeline/images/*
