@@ -4,3 +4,4 @@
 *.bmp
 deepstream_pipeline/predictions/*
 deepstream_pipeline/images/*
+__MACOSX/
