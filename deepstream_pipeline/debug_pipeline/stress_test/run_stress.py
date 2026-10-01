@@ -6,8 +6,9 @@
 #
 # Everything is written line by line with fsync so the logs survive a hang/freeze of the Jetson.
 #
-#   python3 run_stress.py --replay-dir /data/frames/{line} -c carrots --cameras 1,2,3,4 --fps 5,7 --step-minutes 15
-#   python3 run_stress.py --replay-dir /data/frames/{line} -c carrots --cameras 4 --fps 7 --step-minutes 600   # soak
+#   FRAMES=~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/frames
+#   python3 run_stress.py --replay-dir "$FRAMES/{line}" -c carrots --cameras 1,2,3,4 --fps 5,7 --step-minutes 15
+#   python3 run_stress.py --replay-dir "$FRAMES/{line}" -c carrots --cameras 4 --fps 7 --step-minutes 600   # soak
 
 import argparse
 import asyncio
@@ -286,7 +287,7 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stress test: N camera-less pipelines × fps steps on the Jetson.")
     parser.add_argument("--replay-dir", required=True,
-                        help="Frames directory; may contain {line}, e.g. /data/frames/{line}, to use per-line frames.")
+                        help="Frames directory; may contain {line}, e.g. \"$FRAMES/{line}\", to use per-line frames.")
     parser.add_argument("-c", "--crop-type", choices=["peas", "carrots", "beans"], required=True)
     parser.add_argument("--cameras", default="1,2,3,4", help="Comma-separated numbers of parallel pipelines.")
     parser.add_argument("--fps", default="7", help="Comma-separated camera frame rates.")

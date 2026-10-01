@@ -20,13 +20,25 @@ Clean up `*/debug/` directories after long runs; images are still saved (same di
 
 ## Frames
 
-Put frames for each line in their own directory, e.g. `/data/frames/fl1/`. Two formats are accepted:
+Frames live in `debug_pipeline/frames/` (ignored by git, never committed), one folder per line:
+`frames/fl1/`, `frames/fl2/`, `frames/fl3/`, plus e.g. `frames/black/`. The commands below use a shell variable
+for that folder, so they work from any directory:
+
+```bash
+FRAMES=~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/frames
+```
+
+Folders must exist before writing into them: `mkdir -p` creates the folder **and** any missing parent folders
+(plain `mkdir` fails with "No such file or directory" if a parent is missing).
+
+Two formats are accepted:
 
 1. **`.raw` bayer frames (preferred, exactly what the camera delivers).** Capture them on the Jetson with a camera connected:
    ```bash
    # fl1: 3872x1862, fl2: 3728x2000, fl3: 3400x1150 (see FILLING_LINE_CONFIGS in ../config.py)
+   mkdir -p "$FRAMES/fl1"
    gst-launch-1.0 aravissrc camera-name=Baumer-VCXG.2-127C.I-700012638609 num-buffers=20 \
-     ! video/x-bayer,format=rggb,width=3872,height=1862 ! multifilesink location=/data/frames/fl1/fl1_%03d.raw
+     ! video/x-bayer,format=rggb,width=3872,height=1862 ! multifilesink location="$FRAMES/fl1/fl1_%03d.raw"
    ```
    Each file must be exactly `width × height` bytes, otherwise it is skipped.
 2. **Colour images** (`.bmp/.png/.jpg`). Resized to the line's sensor resolution and converted to RGGB bayer.
@@ -39,8 +51,9 @@ Only `--max-images` frames (default 10, ~7 MB each) are loaded into RAM per pipe
 Redis must be running.
 
 ```bash
+FRAMES=~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/frames
 cd ~/DeepStream-Yolo-frosta/deepstream_pipeline
-python3 debug_pipeline/main.py -l fl1 -c carrots --replay-dir /data/frames/fl1 --fps 7 --duration 60 --tag test1
+python3 debug_pipeline/main.py -l fl1 -c carrots --replay-dir "$FRAMES/fl1" --fps 7 --duration 60 --tag test1
 ```
 
 Every 30 s it prints a line like:
@@ -58,13 +71,14 @@ caps negotiation (`not-negotiated` error) — report that before running the str
 ## Stress test
 
 ```bash
+FRAMES=~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/frames
 cd ~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/stress_test
 
 # Ramp: every combination of cameras × fps, 15 min each
-python3 run_stress.py --replay-dir /data/frames/{line} -c carrots --cameras 1,2,3,4,5 --fps 3,5,7,10 --step-minutes 15
+python3 run_stress.py --replay-dir "$FRAMES/{line}" -c carrots --cameras 1,2,3,4,5 --fps 3,5,7,10 --step-minutes 15
 
 # Soak: reproduce the crash (4 cameras at 7 fps for 10 h)
-python3 run_stress.py --replay-dir /data/frames/{line} -c carrots --cameras 4 --fps 7 --step-minutes 600
+python3 run_stress.py --replay-dir "$FRAMES/{line}" -c carrots --cameras 4 --fps 7 --step-minutes 600
 ```
 
 - `{line}` in `--replay-dir` is replaced by the line of each pipeline; geometries are assigned cyclically from `--lines` (default `fl1,fl2,fl3`).
@@ -90,18 +104,21 @@ Model inference costs the same with 0 or 300 detections. What changes is the wor
 make black frames produce that work, so each part can be switched on separately:
 
 ```bash
-# One black frame is enough (resized to each line's resolution)
-mkdir -p /data/frames/black
-python3 -c "import numpy as np, cv2; cv2.imwrite('/data/frames/black/black.png', np.zeros((2000, 3872, 3), np.uint8))"
+FRAMES=~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/frames
+
+# One black frame is enough (resized to each line's resolution). Prints True if it was written:
+# cv2.imwrite does NOT create folders and fails silently, hence mkdir -p first.
+mkdir -p "$FRAMES/black"
+python3 -c "import numpy as np, cv2; print(cv2.imwrite('$FRAMES/black/black.png', np.zeros((2000, 3872, 3), np.uint8)))"
 
 cd ~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/stress_test
 # A: inference only (no detections, nothing after the model)
-python3 run_stress.py --replay-dir /data/frames/black -c carrots --cameras 4 --fps 7 --step-minutes 120
+python3 run_stress.py --replay-dir "$FRAMES/black" -c carrots --cameras 4 --fps 7 --step-minutes 120
 # B: + 20 detections per frame half → Python loop + Redis messages, no image saving
-python3 run_stress.py --replay-dir /data/frames/black -c carrots --cameras 4 --fps 7 --step-minutes 120 \
+python3 run_stress.py --replay-dir "$FRAMES/black" -c carrots --cameras 4 --fps 7 --step-minutes 120 \
     --fake-detections 20 --save-every-frames 0
 # C: + image saving (one image every 50 frame halves)
-python3 run_stress.py --replay-dir /data/frames/black -c carrots --cameras 4 --fps 7 --step-minutes 120 \
+python3 run_stress.py --replay-dir "$FRAMES/black" -c carrots --cameras 4 --fps 7 --step-minutes 120 \
     --fake-detections 20 --save-every-frames 50
 ```
 

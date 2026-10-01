@@ -8,3 +8,4 @@ __MACOSX/
 *.log
 *.log.*
 deepstream_pipeline/debug_pipeline/stress_test/runs/
+deepstream_pipeline/debug_pipeline/frames/

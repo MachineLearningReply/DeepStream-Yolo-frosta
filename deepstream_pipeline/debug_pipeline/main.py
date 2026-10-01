@@ -4,7 +4,8 @@
 # production pipeline (tcamconvert → crop/split → nvstreammux → nvinfer → Redis) and the
 # production probes (callbacks.py). Outputs go to debug/<tag> directories, never production ones.
 #
-#   python3 debug_pipeline/main.py -l fl1 -c carrots --replay-dir /data/frames/fl1 --fps 7 --duration 600 --tag st1
+#   FRAMES=~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/frames
+#   python3 debug_pipeline/main.py -l fl1 -c carrots --replay-dir "$FRAMES/fl1" --fps 7 --duration 600 --tag st1
 
 import os
 import sys
