@@ -6,4 +6,4 @@ deepstream_pipeline/predictions/*
 deepstream_pipeline/images/*
 __MACOSX/
 *.log
-*.log.*
+*.log.*deepstream_pipeline/debug_pipeline/stress_test/runs/
