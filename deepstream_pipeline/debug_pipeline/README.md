@@ -83,6 +83,44 @@ Output in `stress_test/runs/run_<timestamp>/` (written with fsync, so it survive
 
 After a freeze, the **last lines of `memory.csv` and `tegrastats.log`** show the state just before it.
 
+## Pinpointing the load: tests A / B / C
+
+Model inference costs the same with 0 or 300 detections. What changes is the work **after** inference
+(Python loop in `callbacks.py`, Redis messages, copying frames off the GPU and saving `.bmp`). Fake detections
+make black frames produce that work, so each part can be switched on separately:
+
+```bash
+# One black frame is enough (resized to each line's resolution)
+mkdir -p /data/frames/black
+python3 -c "import numpy as np, cv2; cv2.imwrite('/data/frames/black/black.png', np.zeros((2000, 3872, 3), np.uint8))"
+
+cd ~/DeepStream-Yolo-frosta/deepstream_pipeline/debug_pipeline/stress_test
+# A: inference only (no detections, nothing after the model)
+python3 run_stress.py --replay-dir /data/frames/black -c carrots --cameras 4 --fps 7 --step-minutes 120
+# B: + 20 detections per frame half → Python loop + Redis messages, no image saving
+python3 run_stress.py --replay-dir /data/frames/black -c carrots --cameras 4 --fps 7 --step-minutes 120 \
+    --fake-detections 20 --save-every-frames 0
+# C: + image saving (one image every 50 frame halves)
+python3 run_stress.py --replay-dir /data/frames/black -c carrots --cameras 4 --fps 7 --step-minutes 120 \
+    --fake-detections 20 --save-every-frames 50
+```
+
+| Memory (`memory.csv` MemAvailable) keeps going down in… | Points to |
+|---|---|
+| A already | GPU / pipeline itself |
+| B but not A | per-detection work: event metadata, `nvmsgconv`, Redis |
+| C but not B | image saving (GPU frame copy, `.bmp` writes) |
+| none | not reproduced: compare with real frames / GigE network |
+
+Notes:
+- The fake boxes use a real error-class label (default: the crop's first, e.g. `Bruch`), so `callbacks.py` treats them
+  exactly like real detections. `REPLAY_STATS` shows `fake_detections=` to confirm they are added.
+- `--save-every-frames` overrides the save thresholds of `config.py` **only in the debug run**.
+- Disk: 4 cameras × 7 fps × 2 halves = 56 halves/s. `--save-every-frames 50` ≈ 1 image/s ≈ 8 MB/s ≈ 30 GB/h.
+  Above 80 % disk usage `callbacks.py` stops saving, which changes test C — delete `images/debug/` between runs.
+- First check: a 60 s single run with `--fake-detections 5`. If the log shows
+  `Fake detections disabled: cannot set obj_label`, the pyds bindings don't allow setting labels and this needs another approach.
+
 ## Crash forensics (one-time setup on the Jetson)
 
 The board becomes unreachable for hours and then comes back. To find out why:

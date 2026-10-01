@@ -61,6 +61,51 @@ def frames_counter_probe(pad, info, stats):
     return Gst.PadProbeReturn.OK
 
 
+FAKE_BOX_SIZE = 100
+FAKE_BOX_STEP = 150
+
+
+def fake_detections_probe(pad, info, u_data):
+    """Adds N fake detections to every frame, before the production probe sees it.
+
+    Lets black frames generate production-like post-inference load (Python loop, event
+    messages to Redis and image saving) without needing images that contain real objects.
+    """
+    if u_data["disabled"]:
+        return Gst.PadProbeReturn.OK
+    gst_buffer = info.get_buffer()
+    if not gst_buffer:
+        return Gst.PadProbeReturn.OK
+
+    batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(gst_buffer))
+    config, n, label = u_data["config"], u_data["count"], u_data["label"]
+    per_row = max((config.muxer_output_width - FAKE_BOX_SIZE) // FAKE_BOX_STEP, 1)
+
+    l_frame = batch_meta.frame_meta_list
+    while l_frame is not None:
+        frame_meta = pyds.NvDsFrameMeta.cast(l_frame.data)
+        for i in range(n):
+            obj_meta = pyds.nvds_acquire_obj_meta_from_pool(batch_meta)
+            try:
+                obj_meta.obj_label = label
+            except Exception as e:
+                deepstream_logger.error(f"Fake detections disabled: cannot set obj_label ({e})")
+                u_data["disabled"] = True
+                return Gst.PadProbeReturn.OK
+            obj_meta.class_id = 0
+            obj_meta.confidence = 0.9
+            obj_meta.unique_component_id = 1   # same as nvinfer's gie-unique-id
+            rect = obj_meta.rect_params
+            rect.left = (i % per_row) * FAKE_BOX_STEP
+            rect.top = ((i // per_row) * FAKE_BOX_STEP) % max(config.muxer_output_height - FAKE_BOX_SIZE, 1)
+            rect.width = FAKE_BOX_SIZE
+            rect.height = FAKE_BOX_SIZE
+            pyds.nvds_add_obj_meta_to_frame(frame_meta, obj_meta, None)
+        u_data["stats"]["fake_detections"] += n
+        l_frame = l_frame.next
+    return Gst.PadProbeReturn.OK
+
+
 def make_reporter(stats, tag):
     """Returns a function that logs a single machine-parsable REPLAY_STATS line (read by stress_test/run_stress.py)."""
     t0 = time.monotonic()
@@ -78,7 +123,8 @@ def make_reporter(stats, tag):
         appsrc_dropped = stats["pushed"] - stats["entered_tcamconvert"]
         line = (f"REPLAY_STATS tag={tag} t={time.time():.0f} elapsed_s={elapsed:.0f} pushed={stats['pushed']} "
                 f"late={stats['late']} appsrc_dropped={appsrc_dropped} queue_src_overrun={stats['queue_src_overrun']} "
-                f"processed_frames={stats['processed_frames']} push_fps={push_fps:.2f} "
+                f"processed_frames={stats['processed_frames']} fake_detections={stats['fake_detections']} "
+                f"push_fps={push_fps:.2f} "
                 f"processed_cam_fps={cam_fps:.2f} avg_processed_cam_fps={avg_cam_fps:.2f}")
         print(line, flush=True)
         deepstream_logger.info(line)
@@ -92,7 +138,8 @@ def main(config):
     utils.check_required_files(config)
     utils.check_redis_connection(config)
 
-    stats = {"pushed": 0, "late": 0, "entered_tcamconvert": 0, "queue_src_overrun": 0, "processed_frames": 0}
+    stats = {"pushed": 0, "late": 0, "entered_tcamconvert": 0, "queue_src_overrun": 0, "processed_frames": 0,
+             "fake_detections": 0}
 
     frames = load_frames(config.replay_dir, config.source_width, config.source_height,
                          config.bayer_format, config.replay_max_images, deepstream_logger)
@@ -100,6 +147,11 @@ def main(config):
     pipeline, elements = build_pipeline(config, deepstream_logger, stats)
 
     pgie_src_pad = elements["pgie"].get_static_pad("src")
+    # Probes run in the order they are added: fake detections must exist before the production probe runs
+    if config.fake_detections > 0:
+        pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, fake_detections_probe,
+                               {"config": config, "count": config.fake_detections, "label": config.fake_label,
+                                "stats": stats, "disabled": False})
     pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, callbacks.nvinfer_probe, {"config": config, "logger": deepstream_logger})
     pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, callbacks.fps_probe_callback, {"interval_frames": config.fps_interval_frames, "logger": deepstream_logger})
     pgie_src_pad.add_probe(Gst.PadProbeType.BUFFER, frames_counter_probe, stats)
@@ -143,6 +195,14 @@ if __name__ == "__main__":
     parser.add_argument("--duration", type=int, default=0, help="Seconds to run, 0 = until stopped.")
     parser.add_argument("--max-images", type=int, default=10, help="Max frames preloaded into RAM.")
     parser.add_argument("--tag", default=None, help="Run name for output dirs/topic/log (default: <line>).")
+    parser.add_argument("--fake-detections", type=int, default=0,
+                        help="Fake detections added to every frame half after inference (0 = off).")
+    parser.add_argument("--fake-label", default=None,
+                        help="Label of the fake detections (default: first error class of the crop).")
+    parser.add_argument("--save-every-frames", type=int, default=None,
+                        help="Override save thresholds for this run: 0 = never save images, "
+                             "K = save one image every K frame halves (needs --fake-detections). "
+                             "Not set = production thresholds from config.py.")
     args = parser.parse_args()
 
     config = set_dynamic_config(args.crop_type, args.line)
@@ -152,6 +212,13 @@ if __name__ == "__main__":
     config.replay_fps = args.fps
     config.replay_duration_s = args.duration
     config.replay_max_images = args.max_images
+    config.fake_detections = args.fake_detections
+    config.fake_label = args.fake_label or next(iter(config.error_classes))
+    if args.save_every_frames is not None:
+        # The production probe counts detections, not frames: N detections per frame × K frames
+        threshold = args.save_every_frames * max(args.fake_detections, 1)
+        config.error_classes = {config.fake_label: threshold} if threshold else {}
+        config.error_class_tracker = config.error_classes.copy()
     apply_debug_tag(config, args.tag or args.line)
 
     log_handler = RotatingFileHandler(f"{config.log_directory}/{config.log_filename}", maxBytes=1024*1024, backupCount=5)

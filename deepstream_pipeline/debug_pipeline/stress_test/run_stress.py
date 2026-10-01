@@ -144,7 +144,12 @@ async def run_step(args, run_dir, n_cameras, fps, step_label, children):
         duration = step_s + (n_cameras - 1 - i) * args.stagger_s
         cmd = [sys.executable, DEBUG_MAIN, "-l", line, "-c", args.crop_type,
                "--replay-dir", args.replay_dir.format(line=line), "--fps", str(fps),
-               "--duration", str(duration), "--max-images", str(args.max_images), "--tag", tag]
+               "--duration", str(duration), "--max-images", str(args.max_images), "--tag", tag,
+               "--fake-detections", str(args.fake_detections)]
+        if args.fake_label:
+            cmd += ["--fake-label", args.fake_label]
+        if args.save_every_frames is not None:
+            cmd += ["--save-every-frames", str(args.save_every_frames)]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             env={**os.environ, "PYTHONUNBUFFERED": "1"})
@@ -290,5 +295,9 @@ if __name__ == "__main__":
     parser.add_argument("--stagger-s", type=int, default=20, help="Delay between pipeline starts (TensorRT engine load).")
     parser.add_argument("--cooldown-s", type=int, default=30, help="Pause between steps.")
     parser.add_argument("--max-images", type=int, default=10, help="Frames preloaded per pipeline.")
+    parser.add_argument("--fake-detections", type=int, default=0, help="Fake detections per frame half (0 = off).")
+    parser.add_argument("--fake-label", default=None, help="Label of the fake detections.")
+    parser.add_argument("--save-every-frames", type=int, default=None,
+                        help="0 = never save images, K = one image every K frame halves, not set = production thresholds.")
     parser.add_argument("--out-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs"))
     asyncio.run(main(parser.parse_args()))
