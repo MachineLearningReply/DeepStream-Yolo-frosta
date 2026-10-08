@@ -1,0 +1,45 @@
+# The unchanged production pipeline in Docker on the Jetson (driver-crash test, same setup as the Oct 8 run).
+#
+#   docker compose -f docker/compose.yaml build      build the image (first time pulls the DeepStream base image)
+#   docker compose -f docker/compose.yaml up         start fl1 + fl3 (Ctrl+C stops them)
+#   docker compose -f docker/compose.yaml down       remove the stopped containers
+#
+# Redis is the one already running on the host (localhost:6379).
+
+name: deepstream-yolo-frosta
+
+x-pipeline: &pipeline
+  build:
+    context: .
+  image: deepstream-yolo-frosta:latest
+  runtime: nvidia
+  # GigE cameras (discovery broadcasts, high packet rates) and the host's Redis
+  network_mode: host
+  # Normal Jetson user, so saved images/logs belong to 'reply'; GPU device nodes belong to video/render
+  user: "1000:1000"
+  group_add:
+    - video
+    - render
+  environment:
+    # Writable home for the GStreamer plugin registry and CUDA caches
+    HOME: /tmp
+  # Same path as on the host: the code's hard-coded paths, models, engines and logs work unchanged
+  volumes:
+    - /home/reply/DeepStream-Yolo-frosta:/home/reply/DeepStream-Yolo-frosta
+  # Like a manual run: a pipeline that stops stays stopped (and visible)
+  restart: "no"
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: 20m
+      max-file: "5"
+
+services:
+  fl1:
+    <<: *pipeline
+    command: ["/home/reply/DeepStream-Yolo-frosta/deepstream_pipeline/main.py", "-l", "fl1", "-c", "beans"]
+
+  fl3:
+    <<: *pipeline
+    command: ["/home/reply/DeepStream-Yolo-frosta/deepstream_pipeline/main.py", "-l", "fl3", "-c", "beans"]
