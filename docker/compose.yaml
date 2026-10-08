@@ -15,11 +15,11 @@ x-pipeline: &pipeline
   runtime: nvidia
   # GigE cameras (discovery broadcasts, high packet rates) and the host's Redis
   network_mode: host
-  # Normal Jetson user, so saved images/logs belong to 'reply'; GPU device nodes belong to video/render
+  # Normal Jetson user, so saved images/logs belong to 'reply'; the Jetson GPU device nodes belong to group video
+  # (group names are looked up inside the image, which has no 'render' group)
   user: "1000:1000"
   group_add:
     - video
-    - render
   environment:
     # Writable home for the GStreamer plugin registry and CUDA caches
     HOME: /tmp
