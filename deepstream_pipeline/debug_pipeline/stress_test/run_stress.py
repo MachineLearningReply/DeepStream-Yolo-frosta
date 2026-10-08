@@ -16,101 +16,16 @@ import csv
 import os
 import re
 import signal
-import subprocess
 import sys
 import time
 from datetime import datetime
 
-import psutil
+# Shared monitoring code lives in deepstream_pipeline/monitoring/
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "monitoring"))
+from jetson_monitoring import write_run_info, tegrastats_task, memory_task  # noqa: E402
 
 DEBUG_MAIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
 STATS_RE = re.compile(r"^REPLAY_STATS (.*)$")
-MEMINFO_KEYS = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "CmaTotal", "CmaFree")
-
-
-class SyncedWriter:
-    """Append-only text file, flushed and fsynced on every write."""
-
-    def __init__(self, path):
-        self.f = open(path, "a", buffering=1)
-
-    def write(self, text):
-        self.f.write(text)
-        self.f.flush()
-        os.fsync(self.f.fileno())
-
-    def close(self):
-        self.f.close()
-
-
-def read_meminfo():
-    values = {}
-    with open("/proc/meminfo") as f:
-        for line in f:
-            key, rest = line.split(":", 1)
-            if key in MEMINFO_KEYS:
-                values[key] = int(rest.split()[0]) // 1024   # kB -> MB
-    return values
-
-
-def run_cmd(cmd):
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        return (out.stdout + out.stderr).strip()
-    except Exception as e:
-        return f"<failed: {e}>"
-
-
-def write_run_info(run_dir, args):
-    with open(os.path.join(run_dir, "run_info.txt"), "w") as f:
-        f.write(f"started: {datetime.now().isoformat()}\nargs: {vars(args)}\n\n")
-        for cmd in (["nvpmodel", "-q"], ["jetson_clocks", "--show"], ["uptime"], ["free", "-m"],
-                    ["cat", "/etc/nv_tegra_release"]):
-            f.write(f"$ {' '.join(cmd)}\n{run_cmd(cmd)}\n\n")
-
-
-async def tegrastats_task(path, step_label):
-    """Runs tegrastats and writes each line with a timestamp and the current step label."""
-    writer = SyncedWriter(path)
-    try:
-        proc = await asyncio.create_subprocess_exec("tegrastats", "--interval", "1000",
-                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    except FileNotFoundError:
-        writer.write("tegrastats not found\n")
-        return
-    try:
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            writer.write(f"{time.time():.0f} {step_label['value']} {line.decode(errors='replace').rstrip()}\n")
-    finally:
-        if proc.returncode is None:
-            proc.terminate()
-        writer.close()
-
-
-async def memory_task(path, step_label, children, interval_s=5):
-    """Samples system memory and per-pipeline RSS into a CSV."""
-    new_file = not os.path.exists(path)
-    writer = SyncedWriter(path)
-    if new_file:
-        writer.write("time,step," + ",".join(f"{k}_MB" for k in MEMINFO_KEYS) + ",pipelines_rss_MB,per_pipeline_rss_MB\n")
-    try:
-        while True:
-            mem = read_meminfo()
-            rss = []
-            for tag, proc in list(children.items()):
-                try:
-                    rss.append(f"{tag}:{psutil.Process(proc.pid).memory_info().rss // 2**20}")
-                except (psutil.NoSuchProcess, ProcessLookupError):
-                    pass
-            total = sum(int(r.split(":")[1]) for r in rss)
-            writer.write(f"{time.time():.0f},{step_label['value']}," + ",".join(str(mem.get(k, "")) for k in MEMINFO_KEYS)
-                         + f",{total},{' '.join(rss)}\n")
-            await asyncio.sleep(interval_s)
-    finally:
-        writer.close()
 
 
 async def pump_output(proc, log_path, last_stats):

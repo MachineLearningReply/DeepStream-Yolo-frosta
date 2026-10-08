@@ -59,6 +59,7 @@ nvstreammux → nvinfer (YOLOv7) → nvmsgconv → nvmsgbroker (Redis)
 | `deepstream_pipeline/upload_images_predictions/` | Uploader of saved images/predictions to GCS + BigQuery |
 | `deepstream_pipeline/count_predictions.py`, `draw_boxes.py` | Offline helpers for inspecting saved predictions |
 | `deepstream_pipeline/debug_pipeline/` | Camera-less pipeline: replays frames from disk at a set fps; `stress_test/run_stress.py` runs N in parallel and logs system load. See its README |
+| `deepstream_pipeline/monitoring/` | `monitor.py` records the Jetson (tegrastats, memory, per-pipeline fps, network, kernel events) while real production pipelines run; observes only. `jetson_monitoring.py` is shared with `run_stress.py` |
 | `nvdsinfer_custom_impl_Yolo/` | Upstream custom nvinfer parser/engine lib (C++/CUDA) |
 | `utils/export_*.py`, root `config_infer_primary_*.txt`, `docs/` | Upstream export scripts, sample configs, docs |
 
