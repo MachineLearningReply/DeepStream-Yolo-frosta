@@ -60,14 +60,10 @@ it with `sudo` or add your user to the `adm` group once (`sudo usermod -aG adm $
 
 ## After a freeze
 
-Check the restart time and the kernel's crash report, then copy everything to the Mac:
+One command collects everything (restart time, kernel crash report, kernel log, monitor recordings, pipeline logs,
+Docker container output) into `~/crash_<hostname>_<date_time>/` and packs it as a `.tar.gz`:
 ```bash
-uptime -s
-sudo ls -la /sys/fs/pstore/
-mkdir -p ~/crash_<name>
-sudo sh -c 'cp /sys/fs/pstore/* /home/reply/crash_<name>/'
-cp -r ~/DeepStream-Yolo-frosta/deepstream_pipeline/monitoring/runs ~/crash_<name>/
-sudo chmod -R a+r ~/crash_<name>
-# on the Mac:
-scp -r reply@<jetson-ip>:~/crash_<name> ~/Downloads/
+bash ~/DeepStream-Yolo-frosta/deepstream_pipeline/monitoring/collect_crash.sh
 ```
+It asks for the sudo password once and prints the `scp` command to copy the `.tar.gz` to the Mac.
+Run it **before** `docker compose down`, otherwise the container output is gone.

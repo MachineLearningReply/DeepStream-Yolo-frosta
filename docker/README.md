@@ -65,14 +65,7 @@ from the host); it writes the new engine next to the model and reuses it afterwa
 ## After a freeze
 
 ```bash
-uptime -s
-sudo ls -la /sys/fs/pstore/
-mkdir -p ~/crash_jetson2_docker
-sudo sh -c 'cp /sys/fs/pstore/* /home/reply/crash_jetson2_docker/'
-cp -r ~/DeepStream-Yolo-frosta/deepstream_pipeline/monitoring/runs ~/crash_jetson2_docker/
-cp ~/DeepStream-Yolo-frosta/deepstream_pipeline/logs/deepstream_pipeline_fl*.log ~/crash_jetson2_docker/
-sudo sh -c 'tail -c 50M /var/log/kern.log > /home/reply/crash_jetson2_docker/kern_tail.log'
-sudo chmod -R a+r ~/crash_jetson2_docker
-# on the Mac:
-scp -r reply@<jetson-ip>:~/crash_jetson2_docker ~/Downloads/
+bash ~/DeepStream-Yolo-frosta/deepstream_pipeline/monitoring/collect_crash.sh
 ```
+Run it **before** `docker compose down` (it saves the container output). It collects everything into one `.tar.gz`
+and prints the `scp` command for the Mac.
