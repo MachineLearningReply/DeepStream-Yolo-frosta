@@ -5,7 +5,7 @@ The Frosta-specific code lives in `deepstream_pipeline/`; almost everything else
 
 ## Target platform
 
-- NVIDIA Jetson AGX Orin Developer Kit, JetPack 6.2 (L4T 36.4.3)
+- NVIDIA Jetson AGX Orin Developer Kit, JetPack 6.2.1 (L4T 36.4.7, kernel 5.15.148-tegra; checked on Jetson 2 via `/etc/nv_tegra_release`)
 - DeepStream 7.1, CUDA 12.6, TensorRT 10.3, cuDNN 9.0, Python 3.10 with `pyds` bindings
 - Cameras: Baumer GigE (`VCXG.2-127C`), read via `aravissrc` + `tcamconvert`
 - Development happens on macOS: nothing here can be run or tested locally, only on the Jetson.
@@ -60,6 +60,7 @@ nvstreammux → nvinfer (YOLOv7) → nvmsgconv → nvmsgbroker (Redis)
 | `deepstream_pipeline/count_predictions.py`, `draw_boxes.py` | Offline helpers for inspecting saved predictions |
 | `deepstream_pipeline/debug_pipeline/` | Camera-less pipeline: replays frames from disk at a set fps; `stress_test/run_stress.py` runs N in parallel and logs system load. See its README |
 | `deepstream_pipeline/monitoring/` | `monitor.py` records the Jetson (tegrastats, memory, per-pipeline fps, network, kernel events) while real production pipelines run; observes only. `jetson_monitoring.py` is shared with `run_stress.py` |
+| `docker/` | Unchanged production pipeline in a DeepStream 7.1 container (repo mounted at the same path, host Redis); used to show the freeze also happens in Docker. See its README |
 | `nvdsinfer_custom_impl_Yolo/` | Upstream custom nvinfer parser/engine lib (C++/CUDA) |
 | `utils/export_*.py`, root `config_infer_primary_*.txt`, `docs/` | Upstream export scripts, sample configs, docs |
 
@@ -92,12 +93,15 @@ nvstreammux → nvinfer (YOLOv7) → nvmsgconv → nvmsgbroker (Redis)
 - `nvmsgconv_config.txt` still contains NVIDIA sample content. Leave it as-is; it is not understood well enough yet to change safely.
 - `__pycache__/*.pyc` files are committed.
 - `callbacks.save_image_manual` is a debug flag (saves the first 20 frames to `images/manual/<fl>/`).
+- **Jetson freezes under sustained DeepStream load** (CPU 0 stuck in `cuda-EvtHandlr`): a known NVIDIA `host1x-fence`
+  driver bug, not this code; also happens in Docker. Status, evidence and next steps: `deepstream_pipeline/debug_pipeline/FINDINGS.md`.
+  After a freeze, collect evidence with `bash deepstream_pipeline/monitoring/collect_crash.sh`.
 
 ## Working conventions
 
 - `debug_pipeline/pipeline_builder.py` mirrors `pipeline_builder.py` (only the source differs). Any change to the production pipeline must be applied there too.
 - Debug/stress tooling lives in `debug_pipeline/` and imports production modules; don't modify production code for debugging.
 
-- Keep changes compatible with DeepStream 7.1 / JetPack 6.2 and with 3 pipelines sharing one Orin (GPU memory, CPU in probes).
+- Keep changes compatible with DeepStream 7.1 / JetPack 6.2.1 and with 3 pipelines sharing one Orin (GPU memory, CPU in probes).
 - Probes run on the streaming thread: keep per-frame Python work light.
 - Verify changes on the Jetson; say so explicitly when something could not be tested.
