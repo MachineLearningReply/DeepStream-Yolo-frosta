@@ -69,18 +69,29 @@ check_vermagic() {
 
 # Every symbol a module imports carries a CRC; the kernel refuses to load the module if a CRC doesn't match.
 # Check each one against the running kernel's and NVIDIA's OOT module symbol lists.
+# Reference for each imported symbol, in order:
+#   1. the installed NVIDIA module: a symbol it also uses must have exactly the same checksum
+#   2. NVIDIA's OOT driver list (the host1x driver that is actually loaded)
+#   3. the kernel's list, only for symbols NVIDIA's drivers don't provide (e.g. the new _raw_spin_lock_irqsave)
+# The kernel's own (unused) host1x driver exports some of the same names with other checksums,
+# so it must not be checked first.
 check_crcs() {
-    local missing=0 crc sym ref
+    local bad=0 crc sym ref src installed_crcs
+    installed_crcs="$(modprobe --dump-modversions "$INSTALLED")"
     while read -r crc sym; do
-        ref="$(awk -v s="$sym" '$2 == s {print $1; exit}' "$KDIR/Module.symvers" "$OOT_SYMVERS")"
+        src="installed module"; ref="$(awk -v s="$sym" '$2 == s {print $1; exit}' <<< "$installed_crcs")"
+        if [ -z "$ref" ]; then src="NVIDIA drivers"; ref="$(awk -v s="$sym" '$2 == s {print $1; exit}' "$OOT_SYMVERS")"; fi
+        if [ -z "$ref" ]; then src="kernel"; ref="$(awk -v s="$sym" '$2 == s {print $1; exit}' "$KDIR/Module.symvers")"; fi
         if [ -z "$ref" ]; then
-            echo "  ? $sym: not found in the symbol lists"; missing=1
+            echo "  ? $sym: not found in any reference"; bad=1
         elif [ "$(printf '%d' "$ref")" != "$(printf '%d' "$crc")" ]; then
-            echo "  ! $sym: module $crc, kernel $ref"; missing=1
+            echo "  ! $sym: module $crc, $src $ref"; bad=1
+        elif [ "$src" != "installed module" ]; then
+            echo "  + $sym: new in the patched module, matches the $src ($crc)"
         fi
     done < <(modprobe --dump-modversions "$1")
-    [ "$missing" = 0 ] || fail "symbol checksums don't match the running kernel/drivers for $1"
-    echo "  all $(modprobe --dump-modversions "$1" | wc -l) symbol checksums match the running kernel and NVIDIA drivers"
+    [ "$bad" = 0 ] || fail "symbol checksums don't match for $1"
+    echo "  all $(modprobe --dump-modversions "$1" | wc -l) symbol checksums match (shared ones identical to the installed module)"
 }
 
 step "1/2 Build the UNCHANGED module and compare it with the installed one"
