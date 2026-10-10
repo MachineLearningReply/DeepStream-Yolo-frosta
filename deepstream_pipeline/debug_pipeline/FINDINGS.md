@@ -28,6 +28,7 @@ The Jetson freezes completely (unreachable, all logs stop) and restarts by itsel
 | Oct 6, TensorRT only (`trtexec` × 4, same model) | GPU 99 %, ~53 W, Tj 77 °C — as hard or harder | — | **no freeze in 7 h** |
 | Oct 8 11:35, production code on host | fl1 + fl3 real cameras, beans, 10 fps | 1 h 04 min | froze, `cuda-EvtHandlr` on CPU 0 (thread of fl3) |
 | Oct 8 17:24, **same code in Docker** (DeepStream 7.1 container) | same | **1 h 13 min** | **froze, identical signature** |
+| Oct 9 15:30, **patched `host1x-fence.ko`** (production code on host) | fl1 + fl3 real cameras, beans, 10 fps | — | **no freeze in ~11 h**; pipeline stopped at 02:47 by a network link drop (`eno1: Link is Down`), board kept running (up since Oct 9 14:56) |
 
 Details per run: GPU 96–99 %, total power ~49–53 W, Tj 69–80 °C, RAM ≥ 20 GB available, swap 0, camera traffic
 steady (~111 MB/s with 2 cameras), no kernel warnings in the minutes before. Processed fps: ~5 per camera with 4
@@ -55,8 +56,10 @@ More frames per second → more chances → freezes sooner on average, but it is
   rebuild `host1x-fence.ko` for 5.15.148-tegra (build it from NVIDIA's L4T 36.4.7 sources, don't use a module from the forum).
 
 ### Side findings
-- **PL1 network link drops** (`eno1: Link is Down`, `PCS block lock`): stops the pipelines (camera stream error), e.g. Oct 8 17:03.
-  Separate from the freeze; cable/switch port suspected.
+- **PL1 network link drops** (`eno1: Link is Down`, `PCS block lock`): every drop stops the pipelines (camera stream error),
+  e.g. Oct 8 17:03, Oct 10 02:47 and 03:45; **≥ 62** drops in the kernel buffer on Oct 10 (Jetson port: Aquantia AQR113C,
+  negotiated 2.5 Gbps). Separate from the freeze. Candidates: cable/connector/switch port (check `ethtool -S eno1` CRC/FCS
+  errors), speed negotiation, Energy Efficient Ethernet (`ethtool --show-eee eno1`), or the `nvethernet` driver.
 - Production `main.py` exits with code **0** after a GStreamer error, so a supervisor can't tell error from normal stop.
 - Containers run in **UTC** (logs 2 h behind CEST).
 - The model runs in **FP32** (`network-mode=0`); FP16 is roughly 2× faster (the colleague's setup already uses FP16).
@@ -64,11 +67,12 @@ More frames per second → more chances → freezes sooner on average, but it is
 - VS Code Remote on the Jetsons: ~16 GB RAM and, on Jetson 1, 12 cores at 100 % (file search with `--follow`).
 
 ### Next steps
-1. Build and install the patched `host1x-fence.ko` (keep the original), rerun the Oct 8 setup (2 real cameras, 10 fps, monitor),
-   ≥ 8 h, twice.
+1. ~~Build and install the patched `host1x-fence.ko`~~ done 2026-10-09 (`debug_pipeline/host1x_fence/`, original backed up as
+   `~/host1x-fence.ko.orig`, md5 `18823ee5…` = NVIDIA package; patched sha256 `5cce8259…1aab`). First run: no freeze in ~11 h.
+   Next: a second long run to confirm, with automatic pipeline restarts so a network drop doesn't end the test.
 2. Post on NVIDIA's forum (draft below) with the crash reports, especially if the patch does not help.
 3. Enable the persistent journal on both Jetsons: `sudo mkdir -p /var/log/journal && sudo systemctl restart systemd-journald`.
-4. Fix the PL1 network link (cable / switch port).
+4. Fix the PL1 network link (cable / switch port; see side findings) — now the main cause of pipeline stops.
 5. Later: always-on monitor (systemd service) so every future freeze is recorded.
 
 Collect evidence after any freeze with `bash deepstream_pipeline/monitoring/collect_crash.sh`.
@@ -99,41 +103,57 @@ Collect evidence after any freeze with `bash deepstream_pipeline/monitoring/coll
 > complete fix for L4T 36.4.7, or is there an official updated `host1x-fence.ko` / L4T release with it?
 > Crash reports (console-ramoops) and monitoring data attached.
 
-## 2. Open task (not done yet): Redis grows forever + constant disk snapshots
+## 2. Redis grows forever + constant disk snapshots (Jetson 2: fixed on 2026-10-09)
 
-Parked until the crash is understood. Note: the colleague's Docker setup (frosta-edge) already solves both parts
-(Redis started with `--save "" --appendonly no`, and `nvmsgbroker` gets a broker config with `streamsize=500000`).
+Note: the colleague's Docker setup (frosta-edge) already solves both parts (Redis started with
+`--save "" --appendonly no`, and `nvmsgbroker` gets a broker config with `streamsize=500000`).
 
-### Findings (Jetson 2, 2026-10-01)
-- Redis uses **9.55 GB** RAM, `maxmemory` **0** (no limit).
-- Streams are never trimmed: `deepstream_yolo_results_fl1` **21,049,253** messages, fl2 2,736,595, fl3 47,007.
+### Findings (Jetson 2)
+- Redis used **9.55 GB** RAM on Oct 1 and **9.92 GB** on Oct 9; `maxmemory` **0** (no limit), `maxmemory_policy noeviction`.
+- Streams were never trimmed: `deepstream_yolo_results_fl1` **22,506,095** messages on Oct 9, fl2 2,736,595.
   `nvmsgbroker` is created in `pipeline_builder.py` without a Redis adapter config, so there is no stream size limit.
-- `save "900 1 300 10 60 10000"` → under production load Redis snapshots everything to the SSD about every 60 s;
-  the last snapshot took **47 s** (`rdb_last_bgsave_time_sec`). Near-constant multi-GB SSD writes + fork memory overhead.
-- The messages are **live data only** (no need to survive a restart) and are read by **another service**.
+- `save "900 1 300 10 60 10000"` → under production load Redis snapshotted everything to the SSD about every 60 s
+  (one snapshot took **47 s**), and reloaded all old data after every restart.
+- The messages are **live data only**. The consumer (`redis_consumer.py`, BigQuery uploads, other repo) reads with
+  `XREAD` starting at `$` (only messages arriving after it starts), continues after the last ID it read, uses no
+  consumer group and never deletes anything. Old messages are never read again → **trimming them is safe**.
+  It also reads `discoloration_results_<line>` (peas) the same way.
+- Caveat: the consumer reads 1 message per call and pauses during BigQuery uploads, so it can lag behind. If a stream
+  is trimmed below what the consumer has not read yet, those messages are skipped silently. Hence a generous limit:
+  **500,000 per stream** (≈ 7 h at 20 messages/s, ≈ 250 MB).
 
-### Fix (run on each Jetson; check Jetson 1 too)
-1. Read-only: how does the other service read?
-   ```bash
-   redis-cli xinfo groups deepstream_yolo_results_fl1
-   redis-cli client list | grep -v "cmd=client"
-   ```
-   If it only reads new messages, keeping the last ~100 k is safe. If it reads the whole history, ask its owner first.
-2. Stop disk snapshots:
-   ```bash
-   redis-cli config set save "" && redis-cli config rewrite
-   # undo: redis-cli config set save "900 1 300 10 60 10000" && redis-cli config rewrite
-   ```
-3. Trim once, then keep bounded with cron (every 5 min):
-   ```bash
-   for k in $(redis-cli --scan --pattern "deepstream_yolo_results_*"); do redis-cli xtrim $k MAXLEN ~ 100000; done
-   # crontab -e:
-   # */5 * * * * for k in $(redis-cli --scan --pattern "deepstream_yolo_results_*"); do redis-cli xtrim $k MAXLEN ~ 100000 >/dev/null; done
-   ```
-   Delete debug topics after testing: `redis-cli del deepstream_yolo_results_debug_st1` (etc.).
-4. Later, cleaner: give `nvmsgbroker` a Redis adapter config with a stream-size limit in `pipeline_builder.py`
-   (production code change, separate step).
+### Why trimming, and `maxmemory` only as a safety net
+`maxmemory` limits Redis' total RAM, but at the limit Redis either refuses new data (`noeviction`: the pipelines'
+`nvmsgbroker` gets errors) or deletes **whole keys** (e.g. `allkeys-lru`: an entire stream, including unread messages).
+It cannot keep "the newest N messages per stream". Stream trimming (`XTRIM … MAXLEN`) does exactly that, so the cron
+job below is the real limit; `maxmemory 4gb` is only a backstop in case the cron job ever stops (Redis then refuses new
+messages at 4 GB instead of slowly filling the Jetson's RAM).
+
+### Done on Jetson 2 (2026-10-09)
+1. Disk snapshots off: `redis-cli config set save "" && redis-cli config rewrite`
+   (undo: `redis-cli config set save "900 1 300 10 60 10000" && redis-cli config rewrite`).
+2. Trimmed once to ~500,000: fl1 −22,006,084 messages, fl2 −2,236,575 (the others were already below 500,000).
+3. Kept bounded with a cron job every 5 min (keeps the newest ~500,000 messages per stream):
+   `*/5 * * * * for k in $(redis-cli --scan --pattern "deepstream_yolo_results_*") $(redis-cli --scan --pattern "discoloration_results_*"); do redis-cli xtrim $k MAXLEN "~" 500000 >/dev/null; done`
+4. Safety net: `redis-cli config set maxmemory 4gb && redis-cli config rewrite` (undo: `maxmemory 0`).
+
+Steps 1, 3 and 4 live in the camera setup script (with the `arv-tool-0.8` camera settings), so they are reapplied on
+every setup. The cron line is installed duplicate-safe:
+```bash
+TRIM_CRON='*/5 * * * * for k in $(redis-cli --scan --pattern "deepstream_yolo_results_*") $(redis-cli --scan --pattern "discoloration_results_*"); do redis-cli xtrim $k MAXLEN "~" 500000 >/dev/null; done'
+( crontab -l 2>/dev/null | grep -v "xtrim" ; echo "$TRIM_CRON" ) | crontab -
+```
+The cron job belongs to the user that runs the script (`crontab -l` as that user to check).
+
+Result: Redis RAM **9.92 GB → 396 MB**, `maxmemory` 4.00 G, exactly one `xtrim` cron entry.
+
+### Still to do
+5. Delete the stress-test streams (nobody reads them):
+   `redis-cli del deepstream_yolo_results_debug_st1 deepstream_yolo_results_debug_st2 deepstream_yolo_results_debug_st3 deepstream_yolo_results_debug_st4`
+6. Same steps on Jetson 1 (PL2).
+7. Later, cleaner: give `nvmsgbroker` a Redis adapter config with `streamsize=500000` in `pipeline_builder.py`
+   (as the colleague's setup does), so the pipeline keeps streams bounded itself (production code change, separate step).
 
 ### Verify
-`redis-cli info memory | grep used_memory_human` well under 1 GB and flat over days;
-`redis-cli info persistence | grep rdb_bgsave_in_progress` stays 0; the other service still shows live results.
+`redis-cli info memory | grep -E "used_memory_human|maxmemory_human"` → well under 1 GB used, 4 GB max, flat over days;
+`redis-cli info persistence | grep rdb_bgsave_in_progress` stays 0; the BigQuery uploads continue as before.

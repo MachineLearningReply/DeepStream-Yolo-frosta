@@ -38,11 +38,15 @@ Every 30 s the monitor prints a status block:
 [14:05:30] running 2 h 10 min
   pipelines: fl1 9.8 fps cpu 85.0%  fl2 9.7 fps cpu 82.5%
   RAM avail 41230 MB  swap 0 MB  GPU 97%  CPU 70%  Tj 71.2C  power 48.3 W
-  network: eth0 145.2 MB/s
+  network: eno1 111.4 MB/s
+  link eno1 up 2500 Mb/s (changes since boot 2) | cameras reachable 2/2
   kernel events since start: hot_surface_alert 312
 ```
-It also warns immediately when a pipeline disappears or when the kernel reports a CPU stall, SSD timeout,
-BPMP failure or out-of-memory.
+Important events are printed **and** saved immediately to `events.log`: pipeline found/disappeared, the camera network
+link going down/up (with how long it was down), a camera becoming unreachable, and kernel CPU stalls, SSD timeouts,
+BPMP failures, out-of-memory, link drops and failed link alignments (`PCS block lock`).
+
+Options: `--iface eno1` (network port to watch, default `eno1`), `--no-ping` (don't ping the cameras).
 
 ## Recorded files (`runs/monitor_<date>_<time>/`)
 
@@ -53,7 +57,19 @@ BPMP failure or out-of-memory.
 | `memory.csv` | Every 5 s: available RAM, swap, CMA, memory of each pipeline |
 | `pipelines.csv` | Every 30 s per pipeline: alive, CPU %, memory, FPS from its log. `fps_batches` is the value logged by the pipeline (both frame halves counted); `cam_fps` = half of it = camera frames per second |
 | `network.csv` | Every 5 s per network port: received MB/s and packets/s, new dropped and errored packets |
-| `kernel_events.csv` | Every minute: number of new kernel messages per type: `cpu_stall`, `nvme_timeout`, `bpmp_fail`, `gpu_unbind_failed`, `net_link_lost`, `hot_surface_alert`, `out_of_memory` |
+| `kernel_events.csv` | Every minute: number of new kernel messages per type: `cpu_stall`, `nvme_timeout`, `bpmp_fail`, `gpu_unbind_failed`, `link_down`, `pcs_lock_failed`, `hot_surface_alert`, `out_of_memory` |
+| `events.log` | One timestamped line per event (see above): the timeline of an incident |
+| `link.csv` | Every second: camera network link (`eno1`) connected, up/down, speed, total link changes |
+| `ping.csv` | Every second: each camera reachable (1/0) and its response time in ms |
+| `nic_stats.csv` | Every 30 s: network card counters (`ethtool -S eno1`) that changed, with difference and total |
+| `hwmon.csv` | Every 5 s: every temperature sensor the kernel exposes (incl. the network chip's, if it has one) |
+
+### Reading a network drop
+- **Camera unreachable while the Jetson's link is still `up`** → the problem is behind the Jetson: switch or camera
+  (e.g. the switch's PoE power to the cameras).
+- **The Jetson's link goes `down` first** (cameras unreachable only afterwards) → the Jetson's port, its cable or the switch port.
+- **Network chip temperature (`hwmon.csv`) rising before each drop** → overheating.
+- **`nic_stats.csv` error counters rising before the drop** → damaged packets, i.e. cable/connector/port.
 
 `kernel_events.csv` needs read access to `/var/log/kern.log`. If the monitor says it cannot read it, either start
 it with `sudo` or add your user to the `adm` group once (`sudo usermod -aG adm $USER`, then log in again).
